@@ -29,55 +29,40 @@ void cg_init(
   }
 
 #pragma omp target teams distribute parallel for
-  for(int jj = 0; jj < y; ++jj)
-  {
-    for(int kk = 0; kk < x; ++kk)
-    {
-      const int index = kk + jj*x;
+  for (int index = 0; index < x*y; index++) {
       p[index] = 0.0;
       r[index] = 0.0;
       u[index] = energy[index]*density[index];
-    }
   }
 
 #pragma omp target teams distribute parallel for
-  for(int jj = 1; jj < y-1; ++jj)
+  for (int index = 1+x; index < (x-1)*(y-1); ++index)
   {
-    for(int kk = 1; kk < x-1; ++kk)
-    {
-      const int index = kk + jj*x;
       w[index] = (coefficient == CONDUCTIVITY) 
         ? density[index] : 1.0/density[index];
-    }
   }
 
 #pragma omp target teams distribute parallel for
-  for(int jj = halo_depth; jj < y-1; ++jj)
+  for (int index = halo_depth + halo_depth*x; index < (x-1)*(y-1); ++index)
   {
-    for(int kk = halo_depth; kk < x-1; ++kk)
-    {
-      const int index = kk + jj*x;
       kx[index] = rx*(w[index-1]+w[index]) /
         (2.0*w[index-1]*w[index]);
       ky[index] = ry*(w[index-x]+w[index]) /
         (2.0*w[index-x]*w[index]);
-    }
   }
 
   double rro_temp = 0.0;
 
-#pragma omp target teams distribute parallel for reduction(+:rro_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
+#pragma omp target teams distribute parallel for reduction(+:rro_temp) map(tofrom: rro_temp)
+  for (int c = 0; c < (y - 2 * halo_depth)*(x - 2 * halo_depth); ++c)
   {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+    int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
       const double smvp = SMVP(u);
       w[index] = smvp;
       r[index] = u[index]-w[index];
       p[index] = r[index];
       rro_temp += r[index]*p[index];
-    }
   }
 
   // Sum locally
@@ -97,16 +82,14 @@ void cg_calc_w(
 {
   double pw_temp = 0.0;
 
-#pragma omp target teams distribute parallel for reduction(+:pw_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
+#pragma omp target teams distribute parallel for reduction(+:pw_temp) map(tofrom: pw_temp)
+  for (int c = 0; c < (y - 2 * halo_depth)*(x - 2 * halo_depth); ++c)
   {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+    int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
       const double smvp = SMVP(p);
       w[index] = smvp;
       pw_temp += w[index]*p[index];
-    }
   }
 
   *pw += pw_temp;
@@ -126,17 +109,15 @@ void cg_calc_ur(
 {
   double rrn_temp = 0.0;
 
-#pragma omp target teams distribute parallel for reduction(+:rrn_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
+#pragma omp target teams distribute parallel for reduction(+:rrn_temp) map(tofrom: rrn_temp)
+  for (int c = 0; c < (y - 2 * halo_depth)*(x - 2 * halo_depth); ++c)
     {
+      int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
 
       u[index] += alpha*p[index];
       r[index] -= alpha*w[index];
       rrn_temp += r[index]*r[index];
-    }
   }
 
   *rrn += rrn_temp;
@@ -152,14 +133,12 @@ void cg_calc_p(
     double* r)
 {
 #pragma omp target teams distribute parallel for
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
+  for (int c = 0; c < (y - 2 * halo_depth)*(x - 2 * halo_depth); ++c)
   {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+      int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
 
       p[index] = beta*p[index] + r[index];
-    }
   }
 }
 
