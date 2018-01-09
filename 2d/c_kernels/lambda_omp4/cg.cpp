@@ -1,6 +1,25 @@
-#include <stdlib.h>
-#include <omp.h>
+#include <cstdlib>
+
+template <typename F>
+void forall(int start, int end, F loop_body) {
+  #pragma omp target teams distribute parallel for
+  for (int i = start; i < end; ++i) {
+    loop_body(i);
+  }
+}
+
+template <typename T, typename F>
+T reduce_sum(int start, int end, F loop_body, T reduction_variable = {}) {
+#pragma omp target teams distribute parallel for reduction(+ : reduction_variable) map(tofrom: reduction_variable)
+  for (int i = start; i < end; ++i) {
+    reduction_variable += loop_body(i);
+  }
+  return reduction_variable;
+}
+
+extern "C" {
 #include "../../shared.h"
+
 
 /*
  *		CONJUGATE GRADIENT SOLVER KERNEL
@@ -29,58 +48,35 @@ void cg_init(
     die(__LINE__, __FILE__, "Coefficient %d is not valid.\n", coefficient);
   }
 
-#pragma omp target teams distribute parallel for
-  for(int jj = 0; jj < y; ++jj)
-  {
-    for(int kk = 0; kk < x; ++kk)
-    {
-      const int index = kk + jj*x;
+  forall(0, x*y, [=](int index) {
       p[index] = 0.0;
       r[index] = 0.0;
       u[index] = energy[index]*density[index];
-    }
-  }
+    });
 
-#pragma omp target teams distribute parallel for
-  for(int jj = 1; jj < y-1; ++jj)
-  {
-    for(int kk = 1; kk < x-1; ++kk)
-    {
-      const int index = kk + jj*x;
+  forall(1+x, (x-1)*(y-1), [=](int index) {
       w[index] = (coefficient == CONDUCTIVITY) 
         ? density[index] : 1.0/density[index];
-    }
-  }
+    });
 
-#pragma omp target teams distribute parallel for
-  for(int jj = halo_depth; jj < y-1; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-1; ++kk)
-    {
-      const int index = kk + jj*x;
+  forall(1+x, (x-1)*(y-1), [=](int index) {
       kx[index] = rx*(w[index-1]+w[index]) /
         (2.0*w[index-1]*w[index]);
       ky[index] = ry*(w[index-x]+w[index]) /
         (2.0*w[index-x]*w[index]);
-    }
-  }
+    });
 
-  double rro_temp = 0.0;
-#pragma omp target teams distribute parallel for \
-  collapse(2) map(tofrom:rro_temp) reduction(+:rro_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+  double rro_temp = reduce_sum<double>(0, (y-2*halo_depth)*(x-2*halo_depth), [=](int c){
+    int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
       const double smvp = SMVP(u);
       w[index] = smvp;
       r[index] = u[index]-w[index];
       p[index] = r[index];
-      rro_temp += r[index]*p[index];
-    }
-  }
+      return r[index]*p[index];
+    });
 
+  // Sum locally
   *rro += rro_temp;
 }
 
@@ -95,20 +91,13 @@ void cg_calc_w(
     double* kx,
     double* ky)
 {
-  double pw_temp = 0.0;
-#pragma omp target teams distribute parallel for \
-  collapse(2) map(tofrom:pw_temp) reduction(+:pw_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+  double pw_temp = reduce_sum<double>(0, (y-2*halo_depth)*(x-2*halo_depth), [=](int c)  {
+      int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
       const double smvp = SMVP(p);
       w[index] = smvp;
-
-      pw_temp += w[index]*p[index];
-    }
-  }
+      return w[index]*p[index];
+    });
 
   *pw += pw_temp;
 }
@@ -125,21 +114,14 @@ void cg_calc_ur(
     double* r,
     double* w)
 {
-  double rrn_temp = 0.0;
-#pragma omp target teams distribute parallel for \
-  collapse(2) map(tofrom:rrn_temp) reduction(+:rrn_temp)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+  double rrn_temp = reduce_sum<double>(0, (y-2*halo_depth)*(x-2*halo_depth), [=](int c) {
+      int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
 
       u[index] += alpha*p[index];
       r[index] -= alpha*w[index];
-
-      rrn_temp += r[index]*r[index];
-    }
-  }
+      return r[index]*r[index];
+    });
 
   *rrn += rrn_temp;
 }
@@ -153,15 +135,12 @@ void cg_calc_p(
     double* p,
     double* r)
 {
-#pragma omp target teams distribute parallel for collapse(2)
-  for(int jj = halo_depth; jj < y-halo_depth; ++jj)
-  {
-    for(int kk = halo_depth; kk < x-halo_depth; ++kk)
-    {
+  forall(0, (y-2*halo_depth)*(x-2*halo_depth), [=](int c) {
+      int jj = c / (x - 2 * halo_depth) + halo_depth; int kk = c % (x - 2 * halo_depth) + halo_depth;
       const int index = kk + jj*x;
 
       p[index] = beta*p[index] + r[index];
-    }
-  }
+  });
 }
 
+}

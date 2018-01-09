@@ -3,8 +3,6 @@ KERNELS   = omp4_clang
 CPROFILER = yes
 DEBUG     = no
 OPTIONS   = -DNO_MPI
-CC        = /localhd/mattmar/trunk/obj/bin/clang
-CPP       = /localhd/mattmar/trunk/obj/bin/clang++
 COMPILER  = CLANG
 
 # By default use C compiler and flags, may be overridden by implementation
